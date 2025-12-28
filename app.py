@@ -11,8 +11,7 @@ PRODUCTS = ["Black Belt", "Brown Belt", "White Belt", "Bordeaux Belt", "LV Belt"
 # --- CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- SINGLE LOAD FUNCTION ---
-# This is the secret: we read Google only once at startup.
+# --- SINGLE LOAD FUNCTION (MEMORY) ---
 if "data_loaded" not in st.session_state:
     try:
         # Read everything at startup
@@ -21,7 +20,7 @@ if "data_loaded" not in st.session_state:
         st.session_state.financials = conn.read(worksheet="Financials", ttl=0)
         st.session_state.history = conn.read(worksheet="History", ttl=0)
         
-        # Clean numbers to avoid bugs
+        # Clean numbers
         def clean(val):
             if isinstance(val, str): return float(val.replace(',', '.').replace('€', '').strip())
             return float(val) if val else 0.0
@@ -47,8 +46,6 @@ def update_google(sheet_name, df):
     try:
         conn.update(worksheet=sheet_name, data=df)
     except Exception:
-        # If Google blocks (Error 429), we do nothing.
-        # Data remains correct on screen thanks to session_state.
         st.toast(f"⚠️ Google busy. {sheet_name} save delayed.", icon="⏳")
 
 # --- SIDEBAR ---
@@ -108,7 +105,8 @@ elif menu == "Orders":
                 # Cloud Save
                 update_google("Stock", st.session_state.stock)
                 update_google("Orders", st.session_state.orders)
-                st.success("Sale Recorded!")
+                st.toast("Sale Recorded Successfully!", icon="💰")
+                time.sleep(1) # Wait 1s so user sees the toast
                 st.rerun()
             else:
                 st.error("Out of Stock!")
@@ -118,7 +116,6 @@ elif menu == "Orders":
     # 2. ORDERS LIST
     df = st.session_state.orders
     if not df.empty:
-        # Custom headers
         cols = st.columns([1, 2, 2, 1, 2])
         cols[0].write("**Date**")
         cols[1].write("**Product**")
@@ -127,7 +124,6 @@ elif menu == "Orders":
         cols[4].write("**Action**")
         st.write("---")
         
-        # Loop backwards to show newest first
         for i in range(len(df)-1, -1, -1):
             row = df.iloc[i]
             c1, c2, c3, c4, c5 = st.columns([1, 2, 2, 1, 2])
@@ -137,7 +133,6 @@ elif menu == "Orders":
             c3.write(row['client'])
             c4.write(f"{row['price']:.2f}€")
             
-            # --- BUTTONS ---
             status = row['status']
             key_base = f"btn_{row['id']}"
             
@@ -150,7 +145,6 @@ elif menu == "Orders":
             elif status == "Shipped":
                 if c5.button("🟠 Mark Delivered", key=key_base):
                     st.session_state.orders.at[i, "status"] = "Delivered"
-                    # Update financials
                     st.session_state.financials.at[0, "Revenue"] += row['price']
                     st.session_state.financials.at[0, "Profit"] += row['profit']
                     
@@ -188,7 +182,10 @@ elif menu == "Stock":
             
             update_google("Stock", st.session_state.stock)
             update_google("Financials", st.session_state.financials)
-            st.success("Stock updated!")
+            
+            # --- ICI LA MODIFICATION ---
+            st.toast("Stock Added Successfully!", icon="✅")
+            time.sleep(1) # On attend 1 seconde pour que tu le voies
             st.rerun()
 
 elif menu == "Admin":
