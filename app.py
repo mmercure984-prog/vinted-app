@@ -14,10 +14,10 @@ PRODUCTS = ["Black Belt", "Brown Belt", "White Belt", "Bordeaux Belt", "LV Belt"
 # --- CONNEXION GOOGLE SHEETS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# --- FONCTIONS UTILITAIRES ---
 def clean_decimal(val):
     """Transforme '12,50' (texte) en 12.50 (nombre) pour éviter les crashs."""
     if isinstance(val, str):
-        # Remplace virgule par point, enlève les symboles € et espaces
         clean_val = val.replace(',', '.').replace('€', '').strip()
         try:
             return float(clean_val)
@@ -26,26 +26,21 @@ def clean_decimal(val):
     return float(val) if val else 0.0
 
 def get_data():
-    """Récupère les données avec 3 tentatives automatiques en cas d'erreur."""
-    # On essaie 3 fois de lire avant d'abandonner
+    """Récupère les données avec 3 tentatives automatiques (Anti-Crash)."""
     for attempt in range(3):
         try:
             df_stock = conn.read(worksheet="Stock", usecols=[0,1,2], ttl=0)
             df_orders = conn.read(worksheet="Orders", ttl=0)
             df_fin = conn.read(worksheet="Financials", ttl=0)
             df_hist = conn.read(worksheet="History", ttl=0)
-            
-            # Si on arrive ici, c'est que la lecture a marché, on sort de la boucle
             break 
         except Exception as e:
-            # Si c'est le dernier essai (attempt = 2), on affiche l'erreur
             if attempt == 2:
-                st.error(f"⚠️ Erreur persistante après 3 essais : {e}")
+                st.error(f"⚠️ Google Connection Error: {e}")
                 st.stop()
-            # Sinon, on attend 1 seconde et on recommence
             time.sleep(1)
     
-    # --- INITIALISATION ET NETTOYAGE (Code inchangé) ---
+    # Initialisation
     if df_stock.empty or len(df_stock.columns) < 2:
         df_stock = pd.DataFrame({"Product": PRODUCTS, "Qty": [0]*5, "Avg_Cost": [0.0]*5})
     if df_fin.empty:
@@ -55,7 +50,7 @@ def get_data():
     if df_hist.empty:
         df_hist = pd.DataFrame(columns=["log"])
 
-    # Conversion des nombres (Anti-Crash Virgule/Point)
+    # Nettoyage des nombres
     if "Avg_Cost" in df_stock.columns:
         df_stock["Avg_Cost"] = df_stock["Avg_Cost"].apply(clean_decimal)
         df_stock["Qty"] = pd.to_numeric(df_stock["Qty"], errors='coerce').fillna(0).astype(int)
@@ -71,7 +66,7 @@ def get_data():
     return df_stock, df_orders, df_fin, df_hist
 
 def save_all(df_stock, df_orders, df_fin, df_hist):
-    """Sauvegarde sécurisée avec retry."""
+    """Sauvegarde avec retry (Anti-Crash)."""
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -80,14 +75,14 @@ def save_all(df_stock, df_orders, df_fin, df_hist):
             conn.update(worksheet="Financials", data=df_fin)
             conn.update(worksheet="History", data=df_hist)
             st.cache_data.clear()
-            st.toast("Sauvegarde OK !", icon="✅")
+            # st.toast("Saved!", icon="✅") # Optionnel pour moins de notifs
             return
-        except Exception as e:
+        except Exception:
             if attempt < max_retries - 1:
-                time.sleep(2)
+                time.sleep(1.5)
                 continue
             else:
-                st.error(f"❌ Erreur sauvegarde : {e}")
+                st.error("❌ Save failed. Google API is busy. Wait a few seconds.")
 
 def log_action(msg, df_hist):
     entry = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {msg}"
@@ -99,14 +94,13 @@ def generate_pdf(df_fin, df_orders):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     c.setFont("Helvetica-Bold", 16)
-    month_str = datetime.now().strftime("%B %Y")
-    c.drawString(50, 800, f"Report - {month_str}")
+    c.drawString(50, 800, f"Report - {datetime.now().strftime('%B %Y')}")
     c.setFont("Helvetica", 12)
     fin = df_fin.iloc[0]
-    c.drawString(50, 760, f"Realized Revenue: {fin['Revenue']:.2f} EUR")
-    c.drawString(50, 740, f"Realized Profit: {fin['Profit']:.2f} EUR")
+    c.drawString(50, 760, f"Revenue: {fin['Revenue']:.2f} EUR")
+    c.drawString(50, 740, f"Profit: {fin['Profit']:.2f} EUR")
     c.drawString(50, 720, f"Expenses: {fin['Expenses']:.2f} EUR")
-    c.drawString(50, 680, "Delivered Orders this month:")
+    c.drawString(50, 680, "Delivered Orders:")
     y = 660
     c.setFont("Helvetica", 10)
     for index, row in df_orders.iterrows():
@@ -123,7 +117,7 @@ df_stock, df_orders, df_fin, df_hist = get_data()
 
 # --- SIDEBAR ---
 st.sidebar.title("Dressing Manager")
-menu = st.sidebar.radio("Menu", ["Dashboard", "Orders", "Stock Management", "Admin"])
+menu = st.sidebar.radio("Navigation", ["Dashboard", "Order Tracking", "Stock Management", "Admin"])
 
 # --- PAGES ---
 if menu == "Dashboard":
@@ -139,26 +133,26 @@ if menu == "Dashboard":
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Revenue", f"{fin['Revenue']:.2f}€")
     c2.metric("Profit", f"{fin['Profit']:.2f}€")
-    c3.metric("Pending Rev", f"{pending_rev:.2f}€")
-    c4.metric("Pending Prof", f"{pending_prof:.2f}€")
+    c3.metric("Pending", f"{pending_rev:.2f}€")
+    c4.metric("Expenses", f"{fin['Expenses']:.2f}€")
     
     st.divider()
-    st.subheader("📦 Current Stock")
+    st.subheader("📦 Stock Level")
     display_stock = df_stock.copy()
     display_stock["Total Value"] = display_stock["Qty"] * display_stock["Avg_Cost"]
     st.dataframe(display_stock, width="stretch", hide_index=True)
 
-elif menu == "Orders":
+elif menu == "Order Tracking":
     st.title("📦 Order Tracking")
     
-    with st.expander("➕ New Order (Sell)", expanded=False):
+    # Formulaire création
+    with st.expander("➕ New Order", expanded=False):
         c1, c2, c3 = st.columns(3)
         sel_prod = c1.selectbox("Product", PRODUCTS)
-        client = c2.text_input("Customer Name")
-        # STEP 0.01 permet les nombres à virgule (ex: 1.33)
-        price = c3.number_input("Selling Price (€)", min_value=0.0, step=0.01, format="%.2f")
+        client = c2.text_input("Buyer Name")
+        price = c3.number_input("Sold Price (€)", min_value=0.0, step=0.01, format="%.2f")
         
-        if st.button("Create Order"):
+        if st.button("Add Order", type="primary"):
             idx_list = df_stock.index[df_stock["Product"] == sel_prod].tolist()
             if idx_list:
                 idx = idx_list[0]
@@ -175,56 +169,73 @@ elif menu == "Orders":
                         "price": price, "profit": profit, "status": "Processing"
                     }])
                     df_orders = pd.concat([df_orders, new_ord], ignore_index=True)
-                    df_hist = log_action(f"ORDER: {sel_prod} for {client}", df_hist)
+                    df_hist = log_action(f"SOLD: {sel_prod} to {client}", df_hist)
                     save_all(df_stock, df_orders, df_fin, df_hist)
-                    st.success("Order Created!")
+                    st.success("Order Added!")
                     st.rerun()
                 else:
-                    st.error("Out of Stock!")
+                    st.error("No Stock!")
             else:
-                st.error("Produit introuvable.")
+                st.error("Product invalid.")
 
     st.divider()
-    if not df_orders.empty:
-        st.dataframe(df_orders, width="stretch", hide_index=True)
-        
-        st.subheader("Update Order Status")
-        pending_list = df_orders[df_orders["status"] != "Delivered"]
-        
-        if not pending_list.empty:
-            opts = {f"{row['id']} - {row['client']}": row['id'] for idx, row in pending_list.iterrows()}
-            sel_order_str = st.selectbox("Select Order", list(opts.keys()))
-            if sel_order_str:
-                sel_id = opts[sel_order_str]
-                
-                c1, c2 = st.columns(2)
-                if c1.button("Mark Shipped"):
-                    idx = df_orders.index[df_orders["id"] == sel_id].tolist()[0]
-                    df_orders.at[idx, "status"] = "Shipped"
-                    df_hist = log_action(f"SHIPPED: Order #{sel_id}", df_hist)
+    st.subheader("Active Orders")
+    
+    if df_orders.empty:
+        st.info("No orders yet.")
+    else:
+        # En-têtes de colonnes
+        h1, h2, h3, h4, h5 = st.columns([1, 2, 2, 1, 2])
+        h1.markdown("**Date**")
+        h2.markdown("**Product**")
+        h3.markdown("**Client**")
+        h4.markdown("**Price**")
+        h5.markdown("**Status (Click to update)**")
+        st.markdown("---")
+
+        # Affichage Ligne par Ligne
+        # On trie pour avoir les plus récents en haut
+        for index, row in df_orders.sort_values("id", ascending=False).iterrows():
+            c1, c2, c3, c4, c5 = st.columns([1, 2, 2, 1, 2])
+            
+            c1.write(row['date'])
+            c2.write(row['product'])
+            c3.write(row['client'])
+            c4.write(f"{row['price']:.2f}€")
+            
+            # --- LOGIQUE DES BOUTONS COULEURS ---
+            status = row['status']
+            unique_key = f"btn_{row['id']}" # Clé unique obligatoire
+            
+            if status == "Processing":
+                # ÉTAT 1 : Rouge -> Orange
+                if c5.button("🔴 To Ship", key=unique_key, type="primary"):
+                    df_orders.at[index, "status"] = "Shipped"
+                    df_hist = log_action(f"SHIPPED: Order #{row['id']}", df_hist)
                     save_all(df_stock, df_orders, df_fin, df_hist)
                     st.rerun()
-                    
-                if c2.button("Mark Delivered (Money In)"):
-                    idx = df_orders.index[df_orders["id"] == sel_id].tolist()[0]
-                    df_orders.at[idx, "status"] = "Delivered"
-                    ord_price = df_orders.at[idx, "price"]
-                    ord_prof = df_orders.at[idx, "profit"]
-                    df_fin.at[0, "Revenue"] += ord_price
-                    df_fin.at[0, "Profit"] += ord_prof
-                    df_hist = log_action(f"DELIVERED: #{sel_id} (+{ord_prof:.2f}€)", df_hist)
+            
+            elif status == "Shipped":
+                # ÉTAT 2 : Orange (simulé par emoji) -> Vert
+                if c5.button("🟠 Mark Delivered", key=unique_key):
+                    df_orders.at[index, "status"] = "Delivered"
+                    # Encaissement
+                    df_fin.at[0, "Revenue"] += row['price']
+                    df_fin.at[0, "Profit"] += row['profit']
+                    df_hist = log_action(f"PAID: Order #{row['id']}", df_hist)
                     save_all(df_stock, df_orders, df_fin, df_hist)
                     st.balloons()
                     st.rerun()
-        else:
-            st.info("No pending orders.")
+            
+            elif status == "Delivered":
+                # ÉTAT 3 : Vert (Fini)
+                c5.button("🟢 Received", key=unique_key, disabled=True)
 
 elif menu == "Stock Management":
     st.title("🏭 Restock")
     c1, c2, c3 = st.columns(3)
     p_restock = c1.selectbox("Product", PRODUCTS)
     q_restock = c2.number_input("Qty Received", 1)
-    # STEP 0.01 ici aussi
     cost_restock = c3.number_input("Total Cost (€)", 0.0, step=0.01, format="%.2f")
     
     if st.button("Add Stock"):
@@ -246,21 +257,22 @@ elif menu == "Stock Management":
             st.success("Stock Added!")
             st.rerun()
         else:
-            st.error("Erreur produit.")
+            st.error("Product error.")
 
 elif menu == "Admin":
     st.title("⚙️ Admin")
-    st.write(f"Total Expenses: {df_fin.iloc[0]['Expenses']:.2f}€")
-    if st.button("📄 Download Report PDF"):
+    if st.button("Download PDF Report"):
         pdf_file = generate_pdf(df_fin, df_orders)
-        st.download_button("Download", pdf_file, f"Report.pdf", "application/pdf")
+        st.download_button("Download PDF", pdf_file, "Report.pdf", "application/pdf")
+        
     st.divider()
-    if st.button("📅 Start New Month (Reset Revenue)"):
+    if st.button("Start New Month (Reset Revenue)"):
         df_fin.at[0, "Revenue"] = 0.0
         df_fin.at[0, "Profit"] = 0.0
         df_fin.at[0, "Expenses"] = 0.0
         df_hist = log_action("NEW MONTH", df_hist)
         save_all(df_stock, df_orders, df_fin, df_hist)
         st.rerun()
+        
     st.subheader("Logs")
     st.dataframe(df_hist, width="stretch")
