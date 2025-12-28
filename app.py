@@ -8,20 +8,20 @@ import time
 st.set_page_config(page_title="Vinted Manager", layout="wide", page_icon="📦")
 PRODUCTS = ["Black Belt", "Brown Belt", "White Belt", "Bordeaux Belt", "LV Belt"]
 
-# --- CONNEXION ---
+# --- CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FONCTION DE CHARGEMENT UNIQUE ---
-# Le secret est ici : on ne lit plus Google à chaque clic.
+# --- SINGLE LOAD FUNCTION ---
+# This is the secret: we read Google only once at startup.
 if "data_loaded" not in st.session_state:
     try:
-        # On lit tout d'un coup au démarrage
+        # Read everything at startup
         st.session_state.stock = conn.read(worksheet="Stock", usecols=[0,1,2], ttl=0)
         st.session_state.orders = conn.read(worksheet="Orders", ttl=0)
         st.session_state.financials = conn.read(worksheet="Financials", ttl=0)
         st.session_state.history = conn.read(worksheet="History", ttl=0)
         
-        # Petit nettoyage des chiffres pour éviter les bugs
+        # Clean numbers to avoid bugs
         def clean(val):
             if isinstance(val, str): return float(val.replace(',', '.').replace('€', '').strip())
             return float(val) if val else 0.0
@@ -38,24 +38,24 @@ if "data_loaded" not in st.session_state:
         st.session_state.data_loaded = True
         
     except Exception as e:
-        st.error(f"Erreur de démarrage : {e}")
+        st.error(f"Startup Error: {e}")
         st.stop()
 
-# --- FONCTION SAUVEGARDE CIBLÉE ---
+# --- TARGETED SAVE FUNCTION ---
 def update_google(sheet_name, df):
-    """Envoie juste la feuille modifiée à Google."""
+    """Sends only the modified sheet to Google."""
     try:
         conn.update(worksheet=sheet_name, data=df)
     except Exception:
-        # Si Google bloque (Erreur 429), on ne fait rien.
-        # Les données restent correctes à l'écran grâce à session_state.
-        st.toast(f"⚠️ Google occupé. Sauvegarde {sheet_name} reportée.", icon="⏳")
+        # If Google blocks (Error 429), we do nothing.
+        # Data remains correct on screen thanks to session_state.
+        st.toast(f"⚠️ Google busy. {sheet_name} save delayed.", icon="⏳")
 
 # --- SIDEBAR ---
 st.sidebar.title("Dressing Manager")
-menu = st.sidebar.radio("Menu", ["Dashboard", "Commandes", "Stock", "Admin"])
+menu = st.sidebar.radio("Menu", ["Dashboard", "Orders", "Stock", "Admin"])
 
-if st.sidebar.button("🔄 Forcer Rechargement"):
+if st.sidebar.button("🔄 Force Reload"):
     st.cache_data.clear()
     del st.session_state.data_loaded
     st.rerun()
@@ -69,30 +69,30 @@ if menu == "Dashboard":
     pending = ords[ords["status"] != "Delivered"]["price"].sum() if not ords.empty else 0
     
     c1, c2, c3 = st.columns(3)
-    c1.metric("CA Encaissé", f"{fin['Revenue']:.2f}€")
-    c2.metric("Bénéfice Net", f"{fin['Profit']:.2f}€")
-    c3.metric("En attente", f"{pending:.2f}€")
+    c1.metric("Revenue (Received)", f"{fin['Revenue']:.2f}€")
+    c2.metric("Net Profit", f"{fin['Profit']:.2f}€")
+    c3.metric("Pending", f"{pending:.2f}€")
     
     st.divider()
-    st.write("📦 **Stock Actuel**")
+    st.write("📦 **Current Stock**")
     st.dataframe(st.session_state.stock, use_container_width=True, hide_index=True)
 
-elif menu == "Commandes":
-    st.title("📦 Suivi Commandes")
+elif menu == "Orders":
+    st.title("📦 Order Tracking")
     
-    # 1. AJOUTER UNE COMMANDE
-    with st.expander("➕ Nouvelle Vente"):
+    # 1. NEW SALE
+    with st.expander("➕ New Sale"):
         c1, c2, c3 = st.columns(3)
-        prod = c1.selectbox("Produit", PRODUCTS)
-        client = c2.text_input("Client")
-        price = c3.number_input("Prix (€)", 0.0, step=0.5)
+        prod = c1.selectbox("Product", PRODUCTS)
+        client = c2.text_input("Buyer Name")
+        price = c3.number_input("Sold Price (€)", 0.0, step=0.5)
         
-        if st.button("Valider Vente"):
+        if st.button("Confirm Sale"):
             stock = st.session_state.stock
             idx = stock.index[stock["Product"] == prod].tolist()
             
             if idx and stock.at[idx[0], "Qty"] > 0:
-                # Modif locale
+                # Local Update
                 idx = idx[0]
                 st.session_state.stock.at[idx, "Qty"] -= 1
                 profit = price - stock.at[idx, "Avg_Cost"]
@@ -105,29 +105,29 @@ elif menu == "Commandes":
                 }])
                 st.session_state.orders = pd.concat([st.session_state.orders, new_row], ignore_index=True)
                 
-                # Sauvegarde Cloud
+                # Cloud Save
                 update_google("Stock", st.session_state.stock)
                 update_google("Orders", st.session_state.orders)
-                st.success("Vente enregistrée !")
+                st.success("Sale Recorded!")
                 st.rerun()
             else:
-                st.error("Plus de stock !")
+                st.error("Out of Stock!")
 
     st.divider()
     
-    # 2. LISTE DES COMMANDES AVEC BOUTONS
+    # 2. ORDERS LIST
     df = st.session_state.orders
     if not df.empty:
-        # Affichage personnalisé avec colonnes
+        # Custom headers
         cols = st.columns([1, 2, 2, 1, 2])
         cols[0].write("**Date**")
-        cols[1].write("**Produit**")
-        cols[2].write("**Client**")
-        cols[3].write("**Prix**")
+        cols[1].write("**Product**")
+        cols[2].write("**Buyer**")
+        cols[3].write("**Price**")
         cols[4].write("**Action**")
         st.write("---")
         
-        # On boucle à l'envers pour voir les derniers en premier
+        # Loop backwards to show newest first
         for i in range(len(df)-1, -1, -1):
             row = df.iloc[i]
             c1, c2, c3, c4, c5 = st.columns([1, 2, 2, 1, 2])
@@ -137,20 +137,20 @@ elif menu == "Commandes":
             c3.write(row['client'])
             c4.write(f"{row['price']:.2f}€")
             
-            # --- LES BOUTONS ---
+            # --- BUTTONS ---
             status = row['status']
             key_base = f"btn_{row['id']}"
             
             if status == "Processing":
-                if c5.button("🔴 Envoyer", key=key_base):
+                if c5.button("🔴 Mark Shipped", key=key_base):
                     st.session_state.orders.at[i, "status"] = "Shipped"
                     update_google("Orders", st.session_state.orders)
                     st.rerun()
                     
             elif status == "Shipped":
-                if c5.button("🟠 Encaisser", key=key_base):
+                if c5.button("🟠 Mark Delivered", key=key_base):
                     st.session_state.orders.at[i, "status"] = "Delivered"
-                    # Mise à jour finances
+                    # Update financials
                     st.session_state.financials.at[0, "Revenue"] += row['price']
                     st.session_state.financials.at[0, "Profit"] += row['profit']
                     
@@ -160,16 +160,16 @@ elif menu == "Commandes":
                     st.rerun()
                     
             else:
-                c5.button("🟢 Terminé", key=key_base, disabled=True)
+                c5.button("🟢 Completed", key=key_base, disabled=True)
 
 elif menu == "Stock":
-    st.title("🏭 Achat Stock")
+    st.title("🏭 Stock Management")
     c1, c2, c3 = st.columns(3)
-    p = c1.selectbox("Produit", PRODUCTS)
-    q = c2.number_input("Qté", 1)
-    cost = c3.number_input("Coût Total (€)", 0.0)
+    p = c1.selectbox("Product", PRODUCTS)
+    q = c2.number_input("Qty Received", 1)
+    cost = c3.number_input("Total Cost (€)", 0.0)
     
-    if st.button("Ajouter Stock"):
+    if st.button("Add Stock"):
         stock = st.session_state.stock
         idx = stock.index[stock["Product"] == p].tolist()
         
@@ -188,14 +188,14 @@ elif menu == "Stock":
             
             update_google("Stock", st.session_state.stock)
             update_google("Financials", st.session_state.financials)
-            st.success("Stock ajouté !")
+            st.success("Stock updated!")
             st.rerun()
 
 elif menu == "Admin":
     st.title("⚙️ Admin")
-    if st.button("Nouveau Mois (Reset CA)"):
+    if st.button("Start New Month (Reset Revenue)"):
         st.session_state.financials.at[0, "Revenue"] = 0
         st.session_state.financials.at[0, "Profit"] = 0
         update_google("Financials", st.session_state.financials)
-        st.success("Mois réinitialisé")
+        st.success("Month Reset Done")
         st.rerun()
