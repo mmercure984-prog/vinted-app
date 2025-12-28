@@ -26,17 +26,26 @@ def clean_decimal(val):
     return float(val) if val else 0.0
 
 def get_data():
-    """Récupère les données et nettoie les nombres."""
-    try:
-        df_stock = conn.read(worksheet="Stock", usecols=[0,1,2], ttl=0)
-        df_orders = conn.read(worksheet="Orders", ttl=0)
-        df_fin = conn.read(worksheet="Financials", ttl=0)
-        df_hist = conn.read(worksheet="History", ttl=0)
-    except Exception as e:
-        st.error(f"⚠️ Erreur connexion : {e}")
-        st.stop()
+    """Récupère les données avec 3 tentatives automatiques en cas d'erreur."""
+    # On essaie 3 fois de lire avant d'abandonner
+    for attempt in range(3):
+        try:
+            df_stock = conn.read(worksheet="Stock", usecols=[0,1,2], ttl=0)
+            df_orders = conn.read(worksheet="Orders", ttl=0)
+            df_fin = conn.read(worksheet="Financials", ttl=0)
+            df_hist = conn.read(worksheet="History", ttl=0)
+            
+            # Si on arrive ici, c'est que la lecture a marché, on sort de la boucle
+            break 
+        except Exception as e:
+            # Si c'est le dernier essai (attempt = 2), on affiche l'erreur
+            if attempt == 2:
+                st.error(f"⚠️ Erreur persistante après 3 essais : {e}")
+                st.stop()
+            # Sinon, on attend 1 seconde et on recommence
+            time.sleep(1)
     
-    # Initialisation
+    # --- INITIALISATION ET NETTOYAGE (Code inchangé) ---
     if df_stock.empty or len(df_stock.columns) < 2:
         df_stock = pd.DataFrame({"Product": PRODUCTS, "Qty": [0]*5, "Avg_Cost": [0.0]*5})
     if df_fin.empty:
@@ -46,19 +55,16 @@ def get_data():
     if df_hist.empty:
         df_hist = pd.DataFrame(columns=["log"])
 
-    # --- NETTOYAGE CRITIQUE (Anti-Crash) ---
-    # On force la conversion des colonnes numériques
+    # Conversion des nombres (Anti-Crash Virgule/Point)
     if "Avg_Cost" in df_stock.columns:
         df_stock["Avg_Cost"] = df_stock["Avg_Cost"].apply(clean_decimal)
         df_stock["Qty"] = pd.to_numeric(df_stock["Qty"], errors='coerce').fillna(0).astype(int)
 
-    cols_money = ["price", "profit"]
-    for c in cols_money:
+    for c in ["price", "profit"]:
         if c in df_orders.columns:
             df_orders[c] = df_orders[c].apply(clean_decimal)
 
-    cols_fin = ["Revenue", "Profit", "Expenses"]
-    for c in cols_fin:
+    for c in ["Revenue", "Profit", "Expenses"]:
         if c in df_fin.columns:
             df_fin[c] = df_fin[c].apply(clean_decimal)
         
