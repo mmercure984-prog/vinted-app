@@ -3,10 +3,13 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 import time
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Vinted Manager", layout="wide", page_icon="📦")
-PRODUCTS = ["Black Belt", "Brown Belt", "White Belt", "Bordeaux Belt", "LV Belt"]
+PRODUCTS = ["Black Belt", "Brown Belt", "White Belt", "Burgundy Belt", "LV Belt"]
 
 # --- CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -34,19 +37,64 @@ if "data_loaded" not in st.session_state:
         for c in ["Revenue", "Profit", "Expenses"]:
             if c in st.session_state.financials.columns: st.session_state.financials[c] = st.session_state.financials[c].apply(clean)
 
+        # Init history if empty
+        if st.session_state.history.empty:
+             st.session_state.history = pd.DataFrame(columns=["log"])
+
         st.session_state.data_loaded = True
         
     except Exception as e:
         st.error(f"Startup Error: {e}")
         st.stop()
 
-# --- TARGETED SAVE FUNCTION ---
+# --- HELPER FUNCTIONS ---
 def update_google(sheet_name, df):
     """Sends only the modified sheet to Google."""
     try:
         conn.update(worksheet=sheet_name, data=df)
     except Exception:
         st.toast(f"⚠️ Google busy. {sheet_name} save delayed.", icon="⏳")
+
+def log_action(msg):
+    """Adds an entry to the logs and saves history."""
+    entry = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {msg}"
+    new_row = pd.DataFrame([{"log": entry}])
+    st.session_state.history = pd.concat([new_row, st.session_state.history], ignore_index=True)
+    update_google("History", st.session_state.history)
+
+def generate_pdf(df_fin, df_orders):
+    """Generates a PDF report."""
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, 800, f"Monthly Report - {datetime.now().strftime('%B %Y')}")
+    
+    # Financials
+    c.setFont("Helvetica", 12)
+    fin = df_fin.iloc[0]
+    c.drawString(50, 760, f"Total Revenue: {fin['Revenue']:.2f} EUR")
+    c.drawString(50, 740, f"Net Profit: {fin['Profit']:.2f} EUR")
+    c.drawString(50, 720, f"Total Expenses: {fin['Expenses']:.2f} EUR")
+    
+    # Delivered Orders
+    c.drawString(50, 680, "Delivered Orders (This Month):")
+    y = 660
+    c.setFont("Helvetica", 10)
+    
+    # Filter only delivered
+    delivered = df_orders[df_orders["status"] == "Delivered"]
+    if not delivered.empty:
+        for index, row in delivered.iterrows():
+            if y < 50: c.showPage(); y = 800
+            line = f"{row['date']} | {row['product']} | {row['client']} | +{row['profit']:.2f} EUR"
+            c.drawString(50, y, line)
+            y -= 15
+    else:
+        c.drawString(50, y, "No delivered orders yet.")
+        
+    c.save()
+    buffer.seek(0)
+    return buffer
 
 # --- SIDEBAR ---
 st.sidebar.title("Dressing Manager")
@@ -62,16 +110,19 @@ if menu == "Dashboard":
     st.title("📊 Dashboard")
     fin = st.session_state.financials.iloc[0]
     ords = st.session_state.orders
+    stk = st.session_state.stock
     
     pending = ords[ords["status"] != "Delivered"]["price"].sum() if not ords.empty else 0
+    stock_value = (stk["Qty"] * stk["Avg_Cost"]).sum()
     
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Revenue (Received)", f"{fin['Revenue']:.2f}€")
     c2.metric("Net Profit", f"{fin['Profit']:.2f}€")
     c3.metric("Pending", f"{pending:.2f}€")
+    c4.metric("Total Stock Value", f"{stock_value:.2f}€")
     
     st.divider()
-    st.write("📦 **Current Stock**")
+    st.write("📦 **Current Stock Detail**")
     st.dataframe(st.session_state.stock, use_container_width=True, hide_index=True)
 
 elif menu == "Orders":
@@ -102,11 +153,13 @@ elif menu == "Orders":
                 }])
                 st.session_state.orders = pd.concat([st.session_state.orders, new_row], ignore_index=True)
                 
-                # Cloud Save
+                # Logs & Save
+                log_action(f"SALE: {prod} to {client} ({price}€)")
                 update_google("Stock", st.session_state.stock)
                 update_google("Orders", st.session_state.orders)
+                
                 st.toast("Sale Recorded Successfully!", icon="💰")
-                time.sleep(1) # Wait 1s so user sees the toast
+                time.sleep(1)
                 st.rerun()
             else:
                 st.error("Out of Stock!")
@@ -139,6 +192,7 @@ elif menu == "Orders":
             if status == "Processing":
                 if c5.button("🔴 Mark Shipped", key=key_base):
                     st.session_state.orders.at[i, "status"] = "Shipped"
+                    log_action(f"SHIPPED: Order #{row['id']}")
                     update_google("Orders", st.session_state.orders)
                     st.rerun()
                     
@@ -148,6 +202,7 @@ elif menu == "Orders":
                     st.session_state.financials.at[0, "Revenue"] += row['price']
                     st.session_state.financials.at[0, "Profit"] += row['profit']
                     
+                    log_action(f"DELIVERED: Order #{row['id']} (+{row['profit']}€)")
                     update_google("Orders", st.session_state.orders)
                     update_google("Financials", st.session_state.financials)
                     st.balloons()
@@ -180,19 +235,31 @@ elif menu == "Stock":
             st.session_state.stock.at[idx, "Avg_Cost"] = new_avg
             st.session_state.financials.at[0, "Expenses"] += cost
             
+            log_action(f"RESTOCK: {q}x {p} (-{cost}€)")
             update_google("Stock", st.session_state.stock)
             update_google("Financials", st.session_state.financials)
             
-            # --- ICI LA MODIFICATION ---
             st.toast("Stock Added Successfully!", icon="✅")
-            time.sleep(1) # On attend 1 seconde pour que tu le voies
+            time.sleep(1)
             st.rerun()
 
 elif menu == "Admin":
     st.title("⚙️ Admin")
+    
+    st.subheader("📄 Monthly Report")
+    pdf_file = generate_pdf(st.session_state.financials, st.session_state.orders)
+    st.download_button("Download PDF Report", pdf_file, f"Report_{datetime.now().strftime('%B')}.pdf", "application/pdf")
+    
+    st.divider()
+    
     if st.button("Start New Month (Reset Revenue)"):
         st.session_state.financials.at[0, "Revenue"] = 0
         st.session_state.financials.at[0, "Profit"] = 0
+        log_action("RESET: New Month Started")
         update_google("Financials", st.session_state.financials)
         st.success("Month Reset Done")
         st.rerun()
+        
+    st.divider()
+    st.subheader("📜 Activity Logs")
+    st.dataframe(st.session_state.history, use_container_width=True)
