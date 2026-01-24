@@ -7,23 +7,17 @@ import io
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 
-# --- CONFIGURATION ---
 st.set_page_config(page_title="Vinted Manager", layout="wide", page_icon="📦")
-PRODUCTS = ["Black Belt", "Brown Belt", "White Belt", "Burgundy Belt", "LV Belt"]
 
-# --- CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- SINGLE LOAD FUNCTION (MEMORY) ---
 if "data_loaded" not in st.session_state:
     try:
-        # Read everything at startup
         st.session_state.stock = conn.read(worksheet="Stock", usecols=[0,1,2], ttl=0)
         st.session_state.orders = conn.read(worksheet="Orders", ttl=0)
         st.session_state.financials = conn.read(worksheet="Financials", ttl=0)
         st.session_state.history = conn.read(worksheet="History", ttl=0)
         
-        # Clean numbers
         def clean(val):
             if isinstance(val, str): return float(val.replace(',', '.').replace('€', '').strip())
             return float(val) if val else 0.0
@@ -37,51 +31,42 @@ if "data_loaded" not in st.session_state:
         for c in ["Revenue", "Profit", "Expenses"]:
             if c in st.session_state.financials.columns: st.session_state.financials[c] = st.session_state.financials[c].apply(clean)
 
-        # Init history if empty
         if st.session_state.history.empty:
              st.session_state.history = pd.DataFrame(columns=["log"])
 
         st.session_state.data_loaded = True
-        
     except Exception as e:
         st.error(f"Startup Error: {e}")
         st.stop()
 
-# --- HELPER FUNCTIONS ---
 def update_google(sheet_name, df):
-    """Sends only the modified sheet to Google."""
     try:
         conn.update(worksheet=sheet_name, data=df)
     except Exception:
         st.toast(f"⚠️ Google busy. {sheet_name} save delayed.", icon="⏳")
 
 def log_action(msg):
-    """Adds an entry to the logs and saves history."""
     entry = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {msg}"
     new_row = pd.DataFrame([{"log": entry}])
     st.session_state.history = pd.concat([new_row, st.session_state.history], ignore_index=True)
     update_google("History", st.session_state.history)
 
 def generate_pdf(df_fin, df_orders):
-    """Generates a PDF report."""
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, 800, f"Monthly Report - {datetime.now().strftime('%B %Y')}")
     
-    # Financials
     c.setFont("Helvetica", 12)
     fin = df_fin.iloc[0]
     c.drawString(50, 760, f"Total Revenue: {fin['Revenue']:.2f} EUR")
     c.drawString(50, 740, f"Net Profit: {fin['Profit']:.2f} EUR")
     c.drawString(50, 720, f"Total Expenses: {fin['Expenses']:.2f} EUR")
     
-    # Delivered Orders
     c.drawString(50, 680, "Delivered Orders (This Month):")
     y = 660
     c.setFont("Helvetica", 10)
     
-    # Filter only delivered
     delivered = df_orders[df_orders["status"] == "Delivered"]
     if not delivered.empty:
         for index, row in delivered.iterrows():
@@ -96,7 +81,6 @@ def generate_pdf(df_fin, df_orders):
     buffer.seek(0)
     return buffer
 
-# --- SIDEBAR ---
 st.sidebar.title("Dressing Manager")
 menu = st.sidebar.radio("Menu", ["Dashboard", "Orders", "Stock", "Admin"])
 
@@ -105,7 +89,6 @@ if st.sidebar.button("🔄 Force Reload"):
     del st.session_state.data_loaded
     st.rerun()
 
-# --- PAGES ---
 if menu == "Dashboard":
     st.title("📊 Dashboard")
     fin = st.session_state.financials.iloc[0]
@@ -127,11 +110,11 @@ if menu == "Dashboard":
 
 elif menu == "Orders":
     st.title("📦 Order Tracking")
+    product_list = st.session_state.stock["Product"].unique().tolist() if not st.session_state.stock.empty else []
     
-    # 1. NEW SALE
     with st.expander("➕ New Sale"):
         c1, c2, c3 = st.columns(3)
-        prod = c1.selectbox("Product", PRODUCTS)
+        prod = c1.selectbox("Product", product_list)
         client = c2.text_input("Buyer Name")
         price = c3.number_input("Sold Price (€)", 0.0, step=0.5)
         
@@ -140,7 +123,6 @@ elif menu == "Orders":
             idx = stock.index[stock["Product"] == prod].tolist()
             
             if idx and stock.at[idx[0], "Qty"] > 0:
-                # Local Update
                 idx = idx[0]
                 st.session_state.stock.at[idx, "Qty"] -= 1
                 profit = price - stock.at[idx, "Avg_Cost"]
@@ -153,7 +135,6 @@ elif menu == "Orders":
                 }])
                 st.session_state.orders = pd.concat([st.session_state.orders, new_row], ignore_index=True)
                 
-                # Logs & Save
                 log_action(f"SALE: {prod} to {client} ({price}€)")
                 update_google("Stock", st.session_state.stock)
                 update_google("Orders", st.session_state.orders)
@@ -166,7 +147,6 @@ elif menu == "Orders":
 
     st.divider()
     
-    # 2. ORDERS LIST
     df = st.session_state.orders
     if not df.empty:
         cols = st.columns([1, 2, 2, 1, 2])
@@ -213,8 +193,26 @@ elif menu == "Orders":
 
 elif menu == "Stock":
     st.title("🏭 Stock Management")
+
+    with st.expander("✨ Create New Item"):
+        new_prod = st.text_input("New Product Name")
+        if st.button("Create Item"):
+            if new_prod and new_prod not in st.session_state.stock["Product"].values:
+                new_row = pd.DataFrame([{"Product": new_prod, "Qty": 0, "Avg_Cost": 0.0}])
+                st.session_state.stock = pd.concat([st.session_state.stock, new_row], ignore_index=True)
+                update_google("Stock", st.session_state.stock)
+                log_action(f"CREATED: {new_prod}")
+                st.success(f"Added {new_prod}")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.warning("Invalid name or already exists.")
+
+    st.divider()
+
+    product_list = st.session_state.stock["Product"].unique().tolist() if not st.session_state.stock.empty else []
     c1, c2, c3 = st.columns(3)
-    p = c1.selectbox("Product", PRODUCTS)
+    p = c1.selectbox("Product", product_list)
     q = c2.number_input("Qty Received", 1)
     cost = c3.number_input("Total Cost (€)", 0.0)
     
