@@ -19,8 +19,11 @@ if "data_loaded" not in st.session_state:
         st.session_state.history = conn.read(worksheet="History", ttl=0)
         
         def clean(val):
-            if isinstance(val, str): return float(val.replace(',', '.').replace('€', '').strip())
-            return float(val) if val else 0.0
+            if pd.isna(val): return 0.0
+            if isinstance(val, str):
+                cleaned = val.replace(',', '.').replace('€', '').strip()
+                return float(cleaned) if cleaned else 0.0
+            return float(val)
 
         if "Avg_Cost" in st.session_state.stock.columns:
             st.session_state.stock["Avg_Cost"] = st.session_state.stock["Avg_Cost"].apply(clean)
